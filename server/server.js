@@ -48,7 +48,9 @@ io.on('connection', (socket) => {
       participantId,
       participantName,
       meetingId,
-      isHost
+      isHost,
+      isAudioMuted: false,
+      isVideoOff: false,
     });
 
     // Add to meeting
@@ -122,6 +124,116 @@ io.on('connection', (socket) => {
         fromParticipantId: sender.participantId,
         candidate
       });
+    }
+  });
+
+  // Chat message
+  socket.on('chat-message', ({ meetingId, message }) => {
+    const sender = participants.get(socket.id);
+    console.log(`Chat message from ${sender?.participantName} in meeting ${meetingId}`);
+    
+    // Broadcast to all OTHER participants in the meeting (exclude sender)
+    socket.to(meetingId).emit('chat-message', message);
+  });
+
+  // Update participant state (audio/video)
+  socket.on('update-participant-state', ({ meetingId, participantId, isAudioMuted, isVideoOff }) => {
+    const participant = participants.get(socket.id);
+    if (participant && participant.participantId === participantId) {
+      // Update local state
+      if (isAudioMuted !== undefined) participant.isAudioMuted = isAudioMuted;
+      if (isVideoOff !== undefined) participant.isVideoOff = isVideoOff;
+      
+      // Broadcast to all participants
+      io.to(meetingId).emit('participant-state-changed', {
+        participantId,
+        participantName: participant.participantName,
+        isAudioMuted: participant.isAudioMuted,
+        isVideoOff: participant.isVideoOff,
+      });
+    }
+  });
+
+  // Host mutes a participant
+  socket.on('mute-participant', ({ meetingId, participantId }) => {
+    const host = participants.get(socket.id);
+    if (!host || !host.isHost) return;
+    
+    console.log(`Host ${host.participantName} muting ${participantId}`);
+    
+    // Find target participant's socket
+    const targetSocket = Array.from(participants.entries())
+      .find(([_, p]) => p.participantId === participantId);
+    
+    if (targetSocket) {
+      const [targetSocketId, targetParticipant] = targetSocket;
+      targetParticipant.isAudioMuted = true;
+      
+      // Notify the participant they were muted
+      io.to(targetSocketId).emit('muted-by-host');
+      
+      // Broadcast state change to all
+      io.to(meetingId).emit('participant-state-changed', {
+        participantId,
+        participantName: targetParticipant.participantName,
+        isAudioMuted: true,
+        isVideoOff: targetParticipant.isVideoOff,
+      });
+    }
+  });
+
+  // Host unmutes a participant
+  socket.on('unmute-participant', ({ meetingId, participantId }) => {
+    const host = participants.get(socket.id);
+    if (!host || !host.isHost) return;
+    
+    console.log(`Host ${host.participantName} unmuting ${participantId}`);
+    
+    // Find target participant's socket
+    const targetSocket = Array.from(participants.entries())
+      .find(([_, p]) => p.participantId === participantId);
+    
+    if (targetSocket) {
+      const [targetSocketId, targetParticipant] = targetSocket;
+      targetParticipant.isAudioMuted = false;
+      
+      // Notify the participant they were unmuted
+      io.to(targetSocketId).emit('unmuted-by-host');
+      
+      // Broadcast state change to all
+      io.to(meetingId).emit('participant-state-changed', {
+        participantId,
+        participantName: targetParticipant.participantName,
+        isAudioMuted: false,
+        isVideoOff: targetParticipant.isVideoOff,
+      });
+    }
+  });
+
+  // Host removes a participant
+  socket.on('remove-participant', ({ meetingId, participantId }) => {
+    const host = participants.get(socket.id);
+    if (!host || !host.isHost) return;
+    
+    console.log(`Host ${host.participantName} removing ${participantId}`);
+    
+    // Find target participant's socket
+    const targetSocket = Array.from(participants.entries())
+      .find(([_, p]) => p.participantId === participantId);
+    
+    if (targetSocket) {
+      const [targetSocketId] = targetSocket;
+      
+      // Notify the participant they were removed
+      io.to(targetSocketId).emit('removed-by-host');
+      
+      // Force disconnect after a short delay
+      setTimeout(() => {
+        const targetSocketObj = io.sockets.sockets.get(targetSocketId);
+        if (targetSocketObj) {
+          targetSocketObj.disconnect(true);
+        }
+      }, 1000);
     }
   });
 
